@@ -1,3 +1,4 @@
 ./analysis
 ./runs
 ./checkpoints
+./.vscode
