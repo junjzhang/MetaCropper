@@ -43,8 +43,8 @@ class BiForwardHead(nn.Module):
 
     def forward(self, x):
         ARS_FTM = rearrange(self.ARS_FTM_head(
-            x), 'b (c1 c2) -> b c1 c2', c1=self.num_channel_feature)
-        ARS_PWP = rearrange(self.ARS_PWP_head(x), 'b cout -> b cout () ()')
+            x), 'b r (c1 c2) -> b r c1 c2', c1=self.num_channel_feature)
+        ARS_PWP = rearrange(self.ARS_PWP_head(x), 'b r cout -> b r cout () ()')
         return ARS_FTM, ARS_PWP
 
 
@@ -66,7 +66,7 @@ class DeconvBlock(nn.Module):
             nn.Conv2d(num_channel_in, num_channel_out, (3, 3), padding=(1, 1)), nn.GELU())
 
     def forward(self, x):
-        x = repeat(x, 'b c h w -> b c (h f1) (w f2)', f1=2, f2=2)
+        x = repeat(x, 'br c h w -> br c (h f1) (w f2)', f1=2, f2=2)
         return self.net(x)
 
 
@@ -108,19 +108,24 @@ class Mars(nn.Module):
         w = x.shape[3]
         x = self.GAP(x)
 
+        # repeat to fill the ratio dimension
+        r = ratio.shape[1]
+        x = repeat(x, 'b c () () -> b r c () ()', r=r)
+
         # transform and add
-        x += self.ratio_transform(x, ARS_FTM)
+        x += self.ratio_transform(x, ARS_FTM)  # b*r*c*1*1
 
         # replicate to h*w*c
-        x = repeat(x, 'b c () () -> b c h w', h=h, w=w)
+        x = repeat(x, 'b r c () () -> b r c h w', h=h, w=w)
 
         # deconv
+        x = rearrange(x, 'b r c h w -> (b r) c h w')
         x = self.deconv_layers(x)
+        x = rearrange(x, '(b r) c h w -> b r c h w', r=r)
 
         # predict point-wise
         x = self.pixelwise_predict(x, ARS_PWP)
-
-        return x
+        return F.sigmoid(x)
 
     def get_ratio_embedding(self, ratio):
         log_ratio = math.log(ratio)
@@ -130,23 +135,23 @@ class Mars(nn.Module):
                      self.embedding_interp_step + math.log(2))/self.embedding_interp_step
         ratio_embedding = self.ratio_embedding_nodes[idx_low_node, :]*(
             1-rate_high)+self.ratio_embedding_nodes[idx_low_node+1, :]*rate_high
-        ratio_embedding = rearrange(ratio_embedding, 'n -> () n')
+        ratio_embedding = rearrange(ratio_embedding, 'n -> () () n')
         return ratio_embedding
 
     def get_ratio_embedding_batch(self, batch_ratios):
-        ratio_embedding = torch.cat([self.get_ratio_embedding(ratio)
-                                     for ratio in batch_ratios], dim=0)
+        ratio_embedding = torch.cat([torch.cat([self.get_ratio_embedding(ratio)
+                                                for ratio in ratios], dim=1) for ratios in batch_ratios], dim=0)
         return ratio_embedding
 
     @staticmethod
     def ratio_transform(x, ARS_FTM):
-        x = rearrange(x, 'b c () () -> b () c')
-        x = torch.bmm(x, ARS_FTM)
-        x = rearrange(x, 'b () c -> b c () ()')
+        x = rearrange(x, 'b r c () () -> b r () c')
+        x = torch.matmul(x, ARS_FTM)
+        x = rearrange(x, 'b r () c -> b r c () ()')
         return x
 
     @staticmethod
     def pixelwise_predict(x, ARS_PWP):
         x = x*ARS_PWP
-        x = reduce(x, 'b c h w -> b h w', 'sum')
+        x = reduce(x, 'b r c h w -> b r h w', 'sum')
         return x
