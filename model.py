@@ -52,7 +52,7 @@ class MetaLearner(nn.Module):
     def __init__(self, num_embedding_dim, num_layers, num_channel_out, num_channel_feature, dropout_rate=0.5):
         super().__init__()
         self.net = nn.Sequential(*[
-            nn.Linear(num_embedding_dim, num_embedding_dim), nn.GELU(), nn.Dropout(dropout_rate)]*num_layers, BiForwardHead(
+            nn.Linear(num_embedding_dim, num_embedding_dim), nn.ReLu(), nn.Dropout(dropout_rate)]*num_layers, BiForwardHead(
             num_embedding_dim, num_channel_out, num_channel_feature))
 
     def forward(self, x):
@@ -63,7 +63,7 @@ class DeconvBlock(nn.Module):
     def __init__(self, num_channel_in, num_channel_out):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Conv2d(num_channel_in, num_channel_out, (3, 3), padding=(1, 1)), nn.GELU())
+            nn.Conv2d(num_channel_in, num_channel_out, (3, 3), padding=(1, 1)), nn.BatchNorm2d(num_channel_out), nn.ReLu())
 
     def forward(self, x):
         x = repeat(x, 'br c h w -> br c (h f1) (w f2)', f1=2, f2=2)
@@ -113,7 +113,7 @@ class Mars(nn.Module):
         x = repeat(x, 'b c () () -> b r c () ()', r=r)
 
         # transform and add
-        x += self.ratio_transform(x, ARS_FTM)  # b*r*c*1*1
+        x = x + self.ratio_transform(x, ARS_FTM)  # b*r*c*1*1
 
         # replicate to h*w*c
         x = repeat(x, 'b r c () () -> b r c h w', h=h, w=w)
